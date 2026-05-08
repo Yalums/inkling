@@ -1,31 +1,25 @@
-/**
- * api.cpp — Inkling C ABI implementation (M1 stub).
- *
- * Emits four pipeline stages in order with a short delay between each, then
- * INK_STAGE_DONE. No real parsing/layout/rendering yet — those land in M2+.
- *
- * Why a stub still: M1's verification is "logcat sees cpp output AND RN
- * receives progress events", proving the JNI ↔ C++ ↔ progress callback ↔
- * Kotlin trampoline ↔ DeviceEventEmitter ↔ JS chain end-to-end.
- */
-#include "inkling/api.h"
+#include "include/inkling/api.h"
 
-#include <chrono>
-#include <thread>
+#include <filesystem>
+#include <string>
+
+#include "logger.h"
+#include "options.h"
+#include "pipeline.h"
 
 namespace {
 
-constexpr const char* kVersion = "0.1.0-m1";
+constexpr const char* kVersion = "0.1.0-m2";
 
-void emit_progress(ink_progress_cb cb, void* userdata,
-                   const char* job_id, ink_stage_t stage, int percent) {
-    if (cb) cb(job_id, static_cast<int>(stage), percent, userdata);
-}
-
-void emit_log(ink_log_cb cb, void* userdata,
-              ink_log_level_t level, const char* tag, const char* msg) {
-    if (cb) cb(static_cast<int>(level), tag, msg, userdata);
-}
+struct CallbackLogger : public inkling::Logger {
+    ink_log_cb cb;
+    void* ud;
+    CallbackLogger(ink_log_cb c, void* u) : cb(c), ud(u) {}
+    void log(inkling::LogLevel lvl, const char* tag, const char* msg) override {
+        if (!cb) return;
+        cb((int)lvl, tag, msg, ud);
+    }
+};
 
 }  // namespace
 
@@ -43,29 +37,22 @@ ink_status_t ink_convert(const char*      input_path,
                          void*            progress_userdata,
                          ink_log_cb       log,
                          void*            log_userdata) {
-    (void)options_json;
+    if (!input_path || !output_path || !job_id) return INK_ERR_INVALID_OPTIONS;
 
-    if (!input_path || !output_path || !job_id) {
-        emit_log(log, log_userdata, INK_LOG_ERROR, "inkling",
-                 "ink_convert: NULL input/output/job_id");
+    CallbackLogger cbLog(log, log_userdata);
+
+    inkling::Options opts;
+    std::string err;
+    if (!inkling::parseOptions(options_json ? options_json : "", &opts, &err)) {
+        cbLog.log(inkling::LogLevel::Error, "inkling", err.c_str());
         return INK_ERR_INVALID_OPTIONS;
     }
 
-    emit_log(log, log_userdata, INK_LOG_INFO, "inkling",
-             "ink_convert (M1 stub) starting");
-
-    constexpr ink_stage_t stages[] = {
-        INK_STAGE_PARSE, INK_STAGE_LAYOUT, INK_STAGE_RENDER, INK_STAGE_PACKAGE
-    };
-    for (ink_stage_t s : stages) {
-        emit_progress(progress, progress_userdata, job_id, s, 100);
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    }
-    emit_progress(progress, progress_userdata, job_id, INK_STAGE_DONE, 100);
-
-    emit_log(log, log_userdata, INK_LOG_INFO, "inkling",
-             "ink_convert (M1 stub) finished OK");
-    return INK_OK;
+    return inkling::runPipeline(std::filesystem::path(input_path),
+                                std::filesystem::path(output_path),
+                                opts, job_id,
+                                progress, progress_userdata,
+                                &cbLog);
 }
 
 }  // extern "C"
