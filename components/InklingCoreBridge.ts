@@ -16,15 +16,12 @@ export interface ProgressEvent {
   percent: number;
 }
 
-export interface ConvertOptions {
-  /** Future: orientation, font size, dpi, etc. Serialized to JSON for native. */
-  [key: string]: unknown;
-}
+export type OptionsPayload = Record<string, unknown>;
 
 export function convert(
   inputPath: string,
   outputPath: string,
-  options: ConvertOptions,
+  options: OptionsPayload,
   jobId: string,
 ): Promise<string> {
   return InklingCore.convert(inputPath, outputPath, JSON.stringify(options), jobId);

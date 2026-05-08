@@ -18,6 +18,7 @@ class MainApplication : Application(), ReactApplication {
                 PackageList(this).packages.apply {
                     add(InklingCorePackage())
                     add(FilePickerPackage())
+                    add(OrientationPackage())
                 }
 
             override fun getJSMainModuleName(): String = "index"
