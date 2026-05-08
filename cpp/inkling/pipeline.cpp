@@ -12,6 +12,15 @@
 #include "render/font_face.h"
 #include "render/page_raster.h"
 
+#if INKLING_HAS_PARALLEL
+#include <condition_variable>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <thread>
+#endif
+
 #if INKLING_HAS_VERTICAL_LAYOUT
 #include "layout/vertical_layout.h"
 #endif
@@ -150,22 +159,62 @@ ink_status_t runPipeline(const std::filesystem::path& input,
     const int pageCount = (int)layout.pages.size();
 
 #if INKLING_HAS_PARALLEL
-    // Parallel render → JPEG; then sequential PDF assembly preserves order.
+    // Parallel render → JPEG, then sequential PDF assembly preserves order.
+    // FreeType FT_Faces are not thread-safe, so we open one FontBundle per
+    // worker and acquire/release them around each page task via a queue.
     int threads = useOpts.threadCount > 0
                   ? useOpts.threadCount
                   : std::max(1, (int)std::thread::hardware_concurrency());
     threads = std::min(threads, std::max(1, pageCount));
+
+    struct FontBundle {
+        FontFace regular;
+        FontFace bold;
+        FontFace mono;
+    };
+    std::vector<std::unique_ptr<FontBundle>> bundles;
+    bundles.reserve((size_t)threads);
+    for (int i = 0; i < threads; ++i) {
+        auto fb = std::make_unique<FontBundle>();
+        if (!fb->regular.open(useOpts.fontPath)) {
+            log->log(LogLevel::Error, "pipeline", "worker font open failed");
+            return INK_ERR_RENDER;
+        }
+        if (!useOpts.fontPathBold.empty()) fb->bold.open(useOpts.fontPathBold);
+        if (!useOpts.fontPathMono.empty()) fb->mono.open(useOpts.fontPathMono);
+        bundles.push_back(std::move(fb));
+    }
+    std::mutex bmu;
+    std::condition_variable bcv;
+    std::queue<FontBundle*> freeBundles;
+    for (auto& b : bundles) freeBundles.push(b.get());
+
     std::vector<std::vector<uint8_t>> jpegByPage(pageCount);
     {
         ThreadPool pool(threads);
         std::vector<std::future<void>> futs;
         for (int i = 0; i < pageCount; ++i) {
             futs.push_back(pool.submit([&, i] {
+                FontBundle* b = nullptr;
+                {
+                    std::unique_lock<std::mutex> lk(bmu);
+                    bcv.wait(lk, [&]{ return !freeBundles.empty(); });
+                    b = freeBundles.front();
+                    freeBundles.pop();
+                }
+                PageRaster lraster(useOpts, &b->regular,
+                                   b->bold.isOpen() ? &b->bold : nullptr,
+                                   b->mono.isOpen() ? &b->mono : nullptr,
+                                   nullptr);
                 Bitmap8 bm;
-                if (!raster.render(layout.pages[i], &bm)) return;
-                std::vector<uint8_t> jpeg;
-                if (!encodeJpegGray(bm, useOpts.jpegQuality, &jpeg)) return;
-                jpegByPage[i] = std::move(jpeg);
+                if (lraster.render(layout.pages[i], &bm)) {
+                    encodeJpegGray(bm, useOpts.jpegQuality, &jpegByPage[i]);
+                }
+                {
+                    std::lock_guard<std::mutex> lk(bmu);
+                    freeBundles.push(b);
+                }
+                bcv.notify_one();
             }));
         }
         for (auto& f : futs) f.get();
