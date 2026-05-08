@@ -21,6 +21,11 @@ public:
 
     bool setMetadata(const std::string& title, const std::string& author);
 
+    // Load a TTF/TTC and use it for the invisible text layer. Required for
+    // CJK selection/search to work; the default Helvetica covers Latin only.
+    // Returns true on success; falls back to Helvetica on failure.
+    bool setTextFont(const std::string& path);
+
     // Add one page rendered from a JPEG byte buffer. Returns the libharu page
     // index (0-based) on success, -1 on failure.
     int addJpegPage(const std::vector<uint8_t>& jpeg);

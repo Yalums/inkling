@@ -27,9 +27,10 @@ struct PdfBuilder::Impl {
     Logger*            log = nullptr;
     int                pageCount = 0;
     HPDF_Page          lastPage = nullptr;
-    HPDF_Font          textFont = nullptr;          // for invisible text layer
+    HPDF_Font          textFont = nullptr;
+    std::string        textEncoding = "StandardEncoding";
     std::vector<HPDF_Page> pages;
-    std::vector<HPDF_Outline> outlinesByLevel;       // last outline per level
+    std::vector<HPDF_Outline> outlinesByLevel;
 };
 
 PdfBuilder::PdfBuilder(int pw, int ph, Logger* log) : impl_(std::make_unique<Impl>()) {
@@ -52,6 +53,23 @@ bool PdfBuilder::setMetadata(const std::string& title, const std::string& author
     if (!title.empty())  HPDF_SetInfoAttr(impl_->doc, HPDF_INFO_TITLE,  title.c_str());
     if (!author.empty()) HPDF_SetInfoAttr(impl_->doc, HPDF_INFO_AUTHOR, author.c_str());
     HPDF_SetInfoAttr(impl_->doc, HPDF_INFO_CREATOR, "Inkling");
+    return true;
+}
+
+bool PdfBuilder::setTextFont(const std::string& path) {
+    if (!impl_->doc || path.empty()) return false;
+    HPDF_UseUTFEncodings(impl_->doc);
+    HPDF_SetCurrentEncoder(impl_->doc, "UTF-8");
+    const char* fontName = HPDF_LoadTTFontFromFile(impl_->doc, path.c_str(), HPDF_TRUE);
+    if (!fontName) {
+        if (impl_->log) impl_->log->log(LogLevel::Warn, "pdf",
+            "setTextFont: HPDF_LoadTTFontFromFile failed; falling back to Helvetica");
+        return false;
+    }
+    HPDF_Font f = HPDF_GetFont(impl_->doc, fontName, "UTF-8");
+    if (!f) return false;
+    impl_->textFont = f;
+    impl_->textEncoding = "UTF-8";
     return true;
 }
 
@@ -114,14 +132,8 @@ bool PdfBuilder::addOutline(const std::string& title, int level, int pageIndex0)
         HPDF_Destination_SetXYZ(dst, 0, (HPDF_REAL)impl_->pageHeightPx, 1);
         HPDF_Outline_SetDestination(outline, dst);
     }
-    if ((int)impl_->outlinesByLevel.size() < level) {
-        impl_->outlinesByLevel.resize(level);
-    }
+    impl_->outlinesByLevel.resize(level);
     impl_->outlinesByLevel[level - 1] = outline;
-    // Truncate any deeper levels — they no longer reflect the current path.
-    if ((int)impl_->outlinesByLevel.size() > level) {
-        impl_->outlinesByLevel.resize(level);
-    }
     return true;
 }
 

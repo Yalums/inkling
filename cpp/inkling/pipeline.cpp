@@ -143,6 +143,9 @@ ink_status_t runPipeline(const std::filesystem::path& input,
 
     PdfBuilder pdf(useOpts.pageWidth, useOpts.pageHeight, log);
     pdf.setMetadata(doc.title, doc.author);
+    if (useOpts.embedTextLayer) {
+        pdf.setTextFont(useOpts.fontPath);
+    }
 
     const int pageCount = (int)layout.pages.size();
 

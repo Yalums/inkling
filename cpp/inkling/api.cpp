@@ -9,7 +9,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.1.0-m3";
+constexpr const char* kVersion = "0.1.0-m4";
 
 struct CallbackLogger : public inkling::Logger {
     ink_log_cb cb;
