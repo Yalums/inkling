@@ -1,21 +1,19 @@
 package com.supernote_quicktoolbar
 
-import android.os.Handler
-import android.os.Looper
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
-import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 
 /**
  * InklingCoreModule — RN ↔ native conversion bridge.
  *
- * M0 stub: pure-Kotlin fake timer that emits 4 progress stages
- * (parse / layout / render / package) then resolves with a fake output path.
- * M1 will replace the Handler chain with a JNI call into libinkling_jni.so.
+ * convert() dispatches the native call onto a worker thread (nativeConvert
+ * blocks the caller while it walks the pipeline). Each stage callback from
+ * C++ flows through InklingNative.ProgressListener and is republished on
+ * the JS-side 'InklingProgress' DeviceEventEmitter channel.
  */
 class InklingCoreModule(private val ctx: ReactApplicationContext)
     : ReactContextBaseJavaModule(ctx) {
@@ -25,20 +23,33 @@ class InklingCoreModule(private val ctx: ReactApplicationContext)
     @ReactMethod
     fun convert(inputPath: String, outputPath: String, optionsJson: String,
                 jobId: String, promise: Promise) {
-        val main = Handler(Looper.getMainLooper())
-        val stages = listOf(0, 1, 2, 3)  // parse, layout, render, package
-        var i = 0
-        fun tick() {
-            if (i >= stages.size) {
-                emit(jobId, 4, 100)  // done
-                promise.resolve(outputPath)
-                return
+        Thread({
+            try {
+                val listener = object : InklingNative.ProgressListener {
+                    override fun onProgress(jobId: String, stage: Int, percent: Int) {
+                        emit(jobId, stage, percent)
+                    }
+                }
+                val rc = InklingNative.nativeConvert(
+                    inputPath, outputPath, optionsJson, jobId, listener)
+                if (rc == 0) {
+                    promise.resolve(outputPath)
+                } else {
+                    promise.reject("INKLING_ERR_$rc", "ink_convert returned $rc")
+                }
+            } catch (t: Throwable) {
+                promise.reject("INKLING_EXCEPTION", t)
             }
-            emit(jobId, stages[i], 100)
-            i++
-            main.postDelayed(::tick, 400)
+        }, "inkling-convert").start()
+    }
+
+    @ReactMethod
+    fun nativeVersion(promise: Promise) {
+        try {
+            promise.resolve(InklingNative.nativeVersion())
+        } catch (t: Throwable) {
+            promise.reject("INKLING_EXCEPTION", t)
         }
-        main.postDelayed(::tick, 200)
     }
 
     private fun emit(jobId: String, stage: Int, percent: Int) {

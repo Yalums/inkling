@@ -34,4 +34,9 @@ export function onProgress(cb: (e: ProgressEvent) => void): EmitterSubscription 
   return DeviceEventEmitter.addListener('InklingProgress', cb);
 }
 
-export default { convert, onProgress };
+/** Returns the native libinkling_jni.so version string (sanity check for JNI link). */
+export function nativeVersion(): Promise<string> {
+  return InklingCore.nativeVersion();
+}
+
+export default { convert, onProgress, nativeVersion };
