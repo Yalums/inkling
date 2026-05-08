@@ -76,6 +76,15 @@ ink_status_t runPipeline(const std::filesystem::path& input,
         return INK_ERR_INVALID_OPTIONS;
     }
 
+    Options effOpts = opts;
+    if (effOpts.splitLandscape) {
+        int w = effOpts.pageWidth;
+        int h = effOpts.pageHeight;
+        effOpts.pageWidth  = h;
+        effOpts.pageHeight = w / 2;
+    }
+    const Options& useOpts = effOpts;
+
     // ── Parse ─────────────────────────────────────────────────────────────
     emit(progressCb, progressUserdata, jobId, INK_STAGE_PARSE, 0);
     Document doc;
@@ -90,32 +99,32 @@ ink_status_t runPipeline(const std::filesystem::path& input,
 
     // ── Fonts ────────────────────────────────────────────────────────────
     FontFace regular, bold, mono;
-    if (!regular.open(opts.fontPath)) {
+    if (!regular.open(useOpts.fontPath)) {
         log->log(LogLevel::Error, "pipeline", "failed to open regular font");
         return INK_ERR_RENDER;
     }
-    if (!opts.fontPathBold.empty()) bold.open(opts.fontPathBold);
-    if (!opts.fontPathMono.empty()) mono.open(opts.fontPathMono);
+    if (!useOpts.fontPathBold.empty()) bold.open(useOpts.fontPathBold);
+    if (!useOpts.fontPathMono.empty()) mono.open(useOpts.fontPathMono);
 
     // ── Layout ───────────────────────────────────────────────────────────
     emit(progressCb, progressUserdata, jobId, INK_STAGE_LAYOUT, 0);
     LayoutResult layout;
-    if (opts.orientation == Orientation::VerticalRtl) {
+    if (useOpts.orientation == Orientation::VerticalRtl) {
 #if INKLING_HAS_VERTICAL_LAYOUT
-        VerticalLayout vl(opts, &regular,
+        VerticalLayout vl(useOpts, &regular,
                           bold.isOpen() ? &bold : nullptr,
                           mono.isOpen() ? &mono : nullptr,
                           log);
         layout = vl.run(doc);
 #else
-        HorizontalLayout hl(opts, &regular,
+        HorizontalLayout hl(useOpts, &regular,
                             bold.isOpen() ? &bold : nullptr,
                             mono.isOpen() ? &mono : nullptr,
                             log);
         layout = hl.run(doc);
 #endif
     } else {
-        HorizontalLayout hl(opts, &regular,
+        HorizontalLayout hl(useOpts, &regular,
                             bold.isOpen() ? &bold : nullptr,
                             mono.isOpen() ? &mono : nullptr,
                             log);
@@ -128,19 +137,19 @@ ink_status_t runPipeline(const std::filesystem::path& input,
 
     // ── Render + Encode + PDF ────────────────────────────────────────────
     emit(progressCb, progressUserdata, jobId, INK_STAGE_RENDER, 0);
-    PageRaster raster(opts, &regular,
+    PageRaster raster(useOpts, &regular,
                       bold.isOpen() ? &bold : nullptr,
                       mono.isOpen() ? &mono : nullptr, log);
 
-    PdfBuilder pdf(opts.pageWidth, opts.pageHeight, log);
+    PdfBuilder pdf(useOpts.pageWidth, useOpts.pageHeight, log);
     pdf.setMetadata(doc.title, doc.author);
 
     const int pageCount = (int)layout.pages.size();
 
 #if INKLING_HAS_PARALLEL
     // Parallel render → JPEG; then sequential PDF assembly preserves order.
-    int threads = opts.threadCount > 0
-                  ? opts.threadCount
+    int threads = useOpts.threadCount > 0
+                  ? useOpts.threadCount
                   : std::max(1, (int)std::thread::hardware_concurrency());
     threads = std::min(threads, std::max(1, pageCount));
     std::vector<std::vector<uint8_t>> jpegByPage(pageCount);
@@ -152,7 +161,7 @@ ink_status_t runPipeline(const std::filesystem::path& input,
                 Bitmap8 bm;
                 if (!raster.render(layout.pages[i], &bm)) return;
                 std::vector<uint8_t> jpeg;
-                if (!encodeJpegGray(bm, opts.jpegQuality, &jpeg)) return;
+                if (!encodeJpegGray(bm, useOpts.jpegQuality, &jpeg)) return;
                 jpegByPage[i] = std::move(jpeg);
             }));
         }
@@ -161,7 +170,7 @@ ink_status_t runPipeline(const std::filesystem::path& input,
     for (int i = 0; i < pageCount; ++i) {
         if (jpegByPage[i].empty()) continue;
         pdf.addJpegPage(jpegByPage[i]);
-        if (opts.embedTextLayer) {
+        if (useOpts.embedTextLayer) {
             for (const auto& sp : layout.pages[i].textSpans) {
                 if (!sp.utf8.empty()) {
                     pdf.addInvisibleText(sp.utf8, sp.x, sp.y, sp.w, sp.h);
@@ -179,12 +188,12 @@ ink_status_t runPipeline(const std::filesystem::path& input,
             return INK_ERR_RENDER;
         }
         std::vector<uint8_t> jpeg;
-        if (!encodeJpegGray(bm, opts.jpegQuality, &jpeg)) {
+        if (!encodeJpegGray(bm, useOpts.jpegQuality, &jpeg)) {
             log->log(LogLevel::Error, "pipeline", "jpeg encode failed");
             return INK_ERR_ENCODE;
         }
         pdf.addJpegPage(jpeg);
-        if (opts.embedTextLayer) {
+        if (useOpts.embedTextLayer) {
             for (const auto& sp : layout.pages[i].textSpans) {
                 if (!sp.utf8.empty()) {
                     pdf.addInvisibleText(sp.utf8, sp.x, sp.y, sp.w, sp.h);
@@ -196,7 +205,7 @@ ink_status_t runPipeline(const std::filesystem::path& input,
     }
 #endif
 
-    if (opts.embedBookmarks) {
+    if (useOpts.embedBookmarks) {
         for (const auto& a : layout.headings) {
             pdf.addOutline(a.title, a.level, a.pageIndex0);
         }
